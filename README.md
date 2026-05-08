@@ -12,7 +12,7 @@
 
 ### 记录详情与附件
 
-![记录详情与附件](docs/images/work-record-detail.jpg)
+![记录详情与附件](docs/images/work-record-detail.png)
 
 ### 收起悬浮条
 
