@@ -4,16 +4,26 @@
 
 ## 样例展示
 
-> 可在此处继续替换或补充应用截图。
+> 可在 `docs/images/` 目录继续替换或补充应用截图。
 
-![Work Record 应用预览](docs/images/work-record-preview.jpg)
+### 完整工作台
+
+![完整工作台](docs/images/work-record-overview.jpg)
+
+### 记录详情与附件
+
+![记录详情与附件](docs/images/work-record-detail.jpg)
+
+### 收起悬浮条
+
+![收起悬浮条](docs/images/work-record-collapsed.jpg)
 
 <!--
 更多截图占位：
 
-![悬浮顶栏模式](docs/images/floating-bar.png)
-![记录详情编辑](docs/images/detail-editor.png)
-![收起模式](docs/images/collapsed-mode.png)
+![自定义存储目录](docs/images/custom-storage.png)
+![快捷键设置](docs/images/shortcut-settings.png)
+![窗口缩放效果](docs/images/window-resize.png)
 -->
 
 ## 主要功能
