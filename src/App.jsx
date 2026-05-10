@@ -389,6 +389,36 @@ function statusPatch(record, status) {
   return { status };
 }
 
+function friendlyAuthError(error) {
+  const message = String(error?.message || error || '');
+  const secondsMatch = message.match(/after\s+(\d+)\s+seconds/i);
+  const seconds = secondsMatch ? Number(secondsMatch[1]) : 0;
+
+  if (/security purposes|email send rate limit|over_email_send_rate_limit|rate limit/i.test(message)) {
+    return {
+      message: seconds > 0 ? `注册请求太频繁，请 ${seconds} 秒后再试` : '注册请求太频繁，请稍后再试',
+      seconds
+    };
+  }
+  if (/already registered|User already registered|already exists/i.test(message)) {
+    return { message: '这个邮箱已经注册过了，请直接登录', seconds: 0 };
+  }
+  if (/invalid login credentials/i.test(message)) {
+    return { message: '邮箱或密码不正确', seconds: 0 };
+  }
+  if (/Password should be at least|password/i.test(message)) {
+    return { message: '密码不符合要求，请至少使用 6 位字符', seconds: 0 };
+  }
+  if (/email not confirmed/i.test(message)) {
+    return { message: '这个账号还在等待邮箱确认；我已关闭新注册邮箱确认，旧账号请稍等后重试或重新注册', seconds: 0 };
+  }
+
+  return {
+    message: message.replace(/^Error invoking remote method '[^']+':\s*/i, '') || '操作失败，请稍后再试',
+    seconds: 0
+  };
+}
+
 function SelectMenu({ value, options, onChange, compact = false, label, tone = 'default' }) {
   const [open, setOpen] = useState(false);
   const selected = options.find((option) => option.value === value) || options[0];
@@ -450,6 +480,7 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [shortcutDraft, setShortcutDraft] = useState('Ctrl + Alt + W');
   const [shortcutSaving, setShortcutSaving] = useState(false);
+  const [signupCooldown, setSignupCooldown] = useState(0);
   const [showAuthPanel, setShowAuthPanel] = useState(false);
   const [authDraft, setAuthDraft] = useState({
     supabaseUrl: '',
@@ -496,6 +527,12 @@ export default function App() {
     const timer = window.setTimeout(() => setToast(''), 1800);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (signupCooldown <= 0) return undefined;
+    const timer = window.setTimeout(() => setSignupCooldown((current) => Math.max(0, current - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [signupCooldown]);
 
   useEffect(() => {
     if (settings?.popupShortcut) {
@@ -722,20 +759,26 @@ export default function App() {
       setShowAuthPanel(false);
       setToast('登录成功，已切换到云端存储');
     } catch (error) {
-      setToast(error.message || '登录失败');
+      setToast(friendlyAuthError(error).message);
     }
   }
 
   async function signUp(event) {
     event.preventDefault();
+    if (signupCooldown > 0) {
+      setToast(`请 ${signupCooldown} 秒后再注册`);
+      return;
+    }
     try {
       const result = await api.auth.signUp(authDraft);
       setSettings(result.settings);
       setAuth(result.auth);
       await refresh();
-      setToast(result.needsConfirmation ? '注册成功，请先完成邮箱确认' : '注册并登录成功');
+      setToast(result.needsConfirmation ? '注册成功，请先去邮箱点击确认链接' : '注册并登录成功');
     } catch (error) {
-      setToast(error.message || '注册失败');
+      const friendly = friendlyAuthError(error);
+      if (friendly.seconds > 0) setSignupCooldown(friendly.seconds);
+      setToast(friendly.message);
     }
   }
 
@@ -790,6 +833,7 @@ export default function App() {
           setDraft={setAuthDraft}
           onSignIn={signIn}
           onSignUp={signUp}
+          signupCooldown={signupCooldown}
           onMinimize={() => api.window.minimize()}
           onClose={() => api.window.close()}
         />
@@ -905,6 +949,7 @@ export default function App() {
               onConfigure={configureSupabase}
               onSignIn={signIn}
               onSignUp={signUp}
+              signupCooldown={signupCooldown}
               onClose={() => setShowAuthPanel(false)}
             />
           )}
@@ -1010,7 +1055,7 @@ function AuthFooter({ auth, onOpen, onSignOut, onMigrate }) {
   );
 }
 
-function LoginScreen({ draft, setDraft, onSignIn, onSignUp, onMinimize, onClose }) {
+function LoginScreen({ draft, setDraft, onSignIn, onSignUp, signupCooldown, onMinimize, onClose }) {
   const update = (patch) => setDraft((current) => ({ ...current, ...patch }));
 
   return (
@@ -1059,9 +1104,9 @@ function LoginScreen({ draft, setDraft, onSignIn, onSignUp, onMinimize, onClose 
               <LogIn size={17} />
               登录
             </button>
-            <button type="button" onClick={onSignUp}>
+            <button type="button" onClick={onSignUp} disabled={signupCooldown > 0}>
               <UserPlus size={17} />
-              注册
+              {signupCooldown > 0 ? `${signupCooldown}s 后注册` : '注册'}
             </button>
           </div>
         </form>
@@ -1070,7 +1115,7 @@ function LoginScreen({ draft, setDraft, onSignIn, onSignUp, onMinimize, onClose 
   );
 }
 
-function SupabasePanel({ auth, draft, setDraft, onConfigure, onSignIn, onSignUp, onClose }) {
+function SupabasePanel({ auth, draft, setDraft, onConfigure, onSignIn, onSignUp, signupCooldown = 0, onClose }) {
   const update = (patch) => setDraft((current) => ({ ...current, ...patch }));
 
   return (
@@ -1117,9 +1162,9 @@ function SupabasePanel({ auth, draft, setDraft, onConfigure, onSignIn, onSignUp,
             <LogIn size={15} />
             登录
           </button>
-          <button type="button" onClick={onSignUp}>
+          <button type="button" onClick={onSignUp} disabled={signupCooldown > 0}>
             <UserPlus size={15} />
-            注册
+            {signupCooldown > 0 ? `${signupCooldown}s 后注册` : '注册'}
           </button>
         </div>
       </form>
