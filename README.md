@@ -56,6 +56,10 @@
 5. 填入邮箱和密码，点击 `登录` 或 `注册`。
 
 执行 SQL 后会创建 `public.work_records` 表，并启用 Row Level Security。每个用户只能读取、写入、更新和删除自己的记录。
+同时会创建：
+
+- `public.user_profiles`：同步注册用户的 `user_id`、邮箱、最后登录时间。
+- `public.user_settings`：同步每个用户的透明度、置顶、收起状态、弹出快捷键和存储模式。
 
 默认 Supabase 区域：`ap-southeast-1`，也就是 Singapore。
 

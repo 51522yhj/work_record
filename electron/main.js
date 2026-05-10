@@ -155,6 +155,31 @@ function publicSettings(settings = readSettings(), extra = {}) {
   };
 }
 
+function settingsToRow(settings, userId) {
+  return {
+    user_id: userId,
+    opacity: Number(settings.opacity) || defaultSettings.opacity,
+    always_on_top: Boolean(settings.alwaysOnTop),
+    collapsed: Boolean(settings.collapsed),
+    popup_shortcut: settings.popupShortcut || DEFAULT_POPUP_SHORTCUT,
+    storage_mode: settings.storageMode || 'supabase',
+    data_dir: settings.dataDir || null,
+    updated_at: nowIso()
+  };
+}
+
+function rowToSettingsPatch(row) {
+  if (!row) return {};
+  return {
+    opacity: Number(row.opacity) || defaultSettings.opacity,
+    alwaysOnTop: Boolean(row.always_on_top),
+    collapsed: Boolean(row.collapsed),
+    popupShortcut: row.popup_shortcut || DEFAULT_POPUP_SHORTCUT,
+    storageMode: row.storage_mode || 'supabase',
+    dataDir: row.data_dir || null
+  };
+}
+
 function emptyData() {
   return {
     version: 1,
@@ -244,6 +269,77 @@ async function getSupabaseUser(client) {
   return data.user;
 }
 
+async function upsertUserProfile(client, user) {
+  const { error } = await client
+    .from('user_profiles')
+    .upsert({
+      user_id: user.id,
+      email: user.email || '',
+      last_login_at: nowIso(),
+      updated_at: nowIso()
+    }, { onConflict: 'user_id' });
+  if (error) throw error;
+}
+
+async function getOrCreateRemoteSettings(client, userId, localSettings = readSettings()) {
+  const { data, error } = await client
+    .from('user_settings')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  if (data) return rowToSettingsPatch(data);
+
+  const row = settingsToRow({ ...localSettings, storageMode: 'supabase' }, userId);
+  const { data: inserted, error: insertError } = await client
+    .from('user_settings')
+    .insert(row)
+    .select('*')
+    .single();
+  if (insertError) throw insertError;
+  return rowToSettingsPatch(inserted);
+}
+
+async function syncRemoteSettings(settings = readSettings()) {
+  if (!canUseSupabase(settings)) return null;
+  try {
+    const client = await makeSupabaseClient(settings);
+    const user = await getSupabaseUser(client);
+    const { error } = await client
+      .from('user_settings')
+      .upsert(settingsToRow(settings, user.id), { onConflict: 'user_id' });
+    if (error) throw error;
+    return settings;
+  } catch (error) {
+    console.warn('Failed to sync remote settings:', error.message);
+    return null;
+  }
+}
+
+async function getSettingsForClient() {
+  const settings = readSettings();
+  if (!canUseSupabase(settings)) return publicSettings(settings);
+
+  try {
+    const client = await makeSupabaseClient(settings);
+    const user = await getSupabaseUser(client);
+    const remotePatch = await getOrCreateRemoteSettings(client, user.id, settings);
+    const mergedSettings = writeSettings({
+      ...settings,
+      ...remotePatch,
+      supabaseUrl: settings.supabaseUrl,
+      supabaseAnonKey: settings.supabaseAnonKey,
+      supabaseSession: settings.supabaseSession,
+      storageMode: 'supabase'
+    });
+    updateWindowState(mergedSettings);
+    return publicSettings(mergedSettings);
+  } catch (error) {
+    console.warn('Failed to load remote settings:', error.message);
+    return publicSettings(settings, { settingsSyncError: error.message });
+  }
+}
+
 async function authState(settings = readSettings()) {
   const configured = isSupabaseConfigured(settings);
   if (!configured || !settings.supabaseSession?.access_token) {
@@ -258,6 +354,11 @@ async function authState(settings = readSettings()) {
   try {
     const client = await makeSupabaseClient(settings);
     const user = await getSupabaseUser(client);
+    try {
+      await upsertUserProfile(client, user);
+    } catch (profileError) {
+      console.warn('Failed to sync user profile:', profileError.message);
+    }
     return {
       configured: true,
       authenticated: true,
@@ -734,7 +835,27 @@ function registerIpc() {
       supabaseSession: data.session,
       storageMode: 'supabase'
     });
-    return { settings: publicSettings(nextSettings), auth: await authState(nextSettings) };
+    let syncedSettings = nextSettings;
+    let settingsSyncError = '';
+    try {
+      const authedClient = await makeSupabaseClient(nextSettings);
+      const user = await getSupabaseUser(authedClient);
+      await upsertUserProfile(authedClient, user);
+      const remotePatch = await getOrCreateRemoteSettings(authedClient, user.id, nextSettings);
+      syncedSettings = writeSettings({
+        ...nextSettings,
+        ...remotePatch,
+        supabaseUrl: nextSettings.supabaseUrl,
+        supabaseAnonKey: nextSettings.supabaseAnonKey,
+        supabaseSession: nextSettings.supabaseSession,
+        storageMode: 'supabase'
+      });
+    } catch (error) {
+      settingsSyncError = error.message;
+      console.warn('Failed to sync user profile/settings:', error.message);
+    }
+    updateWindowState(syncedSettings);
+    return { settings: publicSettings(syncedSettings, { settingsSyncError }), auth: await authState(syncedSettings) };
   });
 
   ipcMain.handle('auth:signUp', async (_event, payload = {}) => {
@@ -756,9 +877,31 @@ function registerIpc() {
       supabaseSession: data.session || null,
       storageMode: data.session ? 'supabase' : 'local'
     });
+    let syncedSettings = nextSettings;
+    let settingsSyncError = '';
+    if (data.session) {
+      try {
+        const authedClient = await makeSupabaseClient(nextSettings);
+        const user = await getSupabaseUser(authedClient);
+        await upsertUserProfile(authedClient, user);
+        const remotePatch = await getOrCreateRemoteSettings(authedClient, user.id, nextSettings);
+        syncedSettings = writeSettings({
+          ...nextSettings,
+          ...remotePatch,
+          supabaseUrl: nextSettings.supabaseUrl,
+          supabaseAnonKey: nextSettings.supabaseAnonKey,
+          supabaseSession: nextSettings.supabaseSession,
+          storageMode: 'supabase'
+        });
+      } catch (error) {
+        settingsSyncError = error.message;
+        console.warn('Failed to sync user profile/settings:', error.message);
+      }
+      updateWindowState(syncedSettings);
+    }
     return {
-      settings: publicSettings(nextSettings),
-      auth: await authState(nextSettings),
+      settings: publicSettings(syncedSettings, { settingsSyncError }),
+      auth: await authState(syncedSettings),
       needsConfirmation: !data.session
     };
   });
@@ -793,9 +936,9 @@ function registerIpc() {
     return { migrated: localRecords.length };
   });
 
-  ipcMain.handle('settings:get', () => publicSettings());
+  ipcMain.handle('settings:get', () => getSettingsForClient());
 
-  ipcMain.handle('settings:update', (_event, patch = {}) => {
+  ipcMain.handle('settings:update', async (_event, patch = {}) => {
     const currentSettings = readSettings();
     const nextPatch = { ...patch };
     if (Object.prototype.hasOwnProperty.call(nextPatch, 'popupShortcut')) {
@@ -808,6 +951,7 @@ function registerIpc() {
 
     const nextSettings = writeSettings({ ...currentSettings, ...nextPatch });
     updateWindowState(nextSettings);
+    await syncRemoteSettings(nextSettings);
     return publicSettings(nextSettings, { popupShortcutError: '' });
   });
 
@@ -827,32 +971,37 @@ function registerIpc() {
     if (!fs.existsSync(nextDataPath)) {
       writeJson(nextDataPath, currentData);
     }
+    await syncRemoteSettings(nextSettings);
     return { canceled: false, settings: publicSettings(nextSettings, { dataPath: nextDataPath }) };
   });
 
-  ipcMain.handle('window:setOpacity', (_event, opacity) => {
+  ipcMain.handle('window:setOpacity', async (_event, opacity) => {
     const value = Math.min(1, Math.max(0.45, Number(opacity) || defaultSettings.opacity));
     const nextSettings = writeSettings({ ...readSettings(), opacity: value });
     updateWindowState(nextSettings);
+    await syncRemoteSettings(nextSettings);
     return nextSettings.opacity;
   });
 
-  ipcMain.handle('window:toggleAlwaysOnTop', () => {
+  ipcMain.handle('window:toggleAlwaysOnTop', async () => {
     const settings = readSettings();
     const nextSettings = writeSettings({ ...settings, alwaysOnTop: !settings.alwaysOnTop });
     updateWindowState(nextSettings);
+    await syncRemoteSettings(nextSettings);
     return nextSettings.alwaysOnTop;
   });
 
-  ipcMain.handle('window:collapse', () => {
+  ipcMain.handle('window:collapse', async () => {
     const nextSettings = writeSettings({ ...readSettings(), collapsed: true });
     placeWindowAtTop(mainWindow, true);
+    await syncRemoteSettings(nextSettings);
     return nextSettings.collapsed;
   });
 
-  ipcMain.handle('window:expand', () => {
+  ipcMain.handle('window:expand', async () => {
     const nextSettings = writeSettings({ ...readSettings(), collapsed: false });
     placeWindowAtTop(mainWindow, false);
+    await syncRemoteSettings(nextSettings);
     return nextSettings.collapsed;
   });
 
