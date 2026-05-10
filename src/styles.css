@@ -429,7 +429,8 @@ select {
 }
 
 .select-label i,
-.status-option i {
+.status-option i,
+.priority-option i {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
@@ -1124,7 +1125,7 @@ label span,
 
 .storage-bar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 12px;
   align-items: center;
   height: 48px;
@@ -1165,6 +1166,104 @@ label span,
 .shortcut-editor button {
   min-height: 32px;
   padding: 0 10px;
+}
+
+.auth-footer {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.auth-panel {
+  position: absolute;
+  right: 18px;
+  bottom: 58px;
+  z-index: 80;
+  width: min(520px, calc(100% - 36px));
+  padding: 14px;
+  border: 1px solid rgba(77, 91, 107, 0.15);
+  border-radius: 10px;
+  background: rgba(250, 253, 255, 0.95);
+  box-shadow: 0 22px 54px rgba(31, 42, 55, 0.22);
+  backdrop-filter: blur(18px);
+}
+
+.auth-panel-title {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.auth-panel-title div {
+  display: grid;
+  gap: 4px;
+}
+
+.auth-panel-title strong {
+  font-size: 14px;
+}
+
+.auth-panel-title span {
+  color: #657488;
+  font-size: 12px;
+}
+
+.auth-panel-title button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-height: 30px;
+  border-radius: 8px;
+  color: #526172;
+  background: rgba(93, 111, 126, 0.08);
+}
+
+.auth-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.auth-form input {
+  height: 36px;
+  font-size: 12px;
+}
+
+.auth-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.auth-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #263442;
+  background: rgba(93, 111, 126, 0.08);
+}
+
+.auth-actions button:hover,
+.auth-panel-title button:hover {
+  color: #ffffff;
+  background: #1f6f8b;
 }
 
 .toast {

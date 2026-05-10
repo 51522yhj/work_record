@@ -17,6 +17,14 @@ contextBridge.exposeInMainWorld('workRecord', {
     update: (patch) => ipcRenderer.invoke('settings:update', patch),
     selectDataDir: () => ipcRenderer.invoke('settings:selectDataDir')
   },
+  auth: {
+    get: () => ipcRenderer.invoke('auth:get'),
+    configure: (payload) => ipcRenderer.invoke('auth:configure', payload),
+    signIn: (payload) => ipcRenderer.invoke('auth:signIn', payload),
+    signUp: (payload) => ipcRenderer.invoke('auth:signUp', payload),
+    signOut: () => ipcRenderer.invoke('auth:signOut'),
+    migrateLocalToSupabase: () => ipcRenderer.invoke('auth:migrateLocalToSupabase')
+  },
   window: {
     setOpacity: (opacity) => ipcRenderer.invoke('window:setOpacity', opacity),
     toggleAlwaysOnTop: () => ipcRenderer.invoke('window:toggleAlwaysOnTop'),

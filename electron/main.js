@@ -1,10 +1,13 @@
 const { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell, screen } = require('electron');
+const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 const path = require('path');
 
 const DATA_FILE = 'work-records.json';
 const SETTINGS_FILE = 'settings.json';
 const DEFAULT_POPUP_SHORTCUT = 'CommandOrControl+Alt+W';
+const DEFAULT_SUPABASE_URL = 'https://mwuvkyjynsvsfcqfyeks.supabase.co';
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_5yTjz0oR3Dc4MCS5Cjhkzg_5aoqHXoM';
 const MIN_WINDOW_WIDTH = 560;
 const MIN_WINDOW_HEIGHT = 76;
 
@@ -16,7 +19,11 @@ const defaultSettings = {
   opacity: 0.92,
   alwaysOnTop: true,
   collapsed: false,
-  popupShortcut: DEFAULT_POPUP_SHORTCUT
+  popupShortcut: DEFAULT_POPUP_SHORTCUT,
+  storageMode: 'local',
+  supabaseUrl: DEFAULT_SUPABASE_URL,
+  supabaseAnonKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY,
+  supabaseSession: null
 };
 
 function nowIso() {
@@ -59,20 +66,19 @@ function writeJson(filePath, value) {
 }
 
 function readSettings() {
-  return { ...defaultSettings, ...readJson(settingsPath(), defaultSettings) };
+  const savedSettings = readJson(settingsPath(), {});
+  return {
+    ...defaultSettings,
+    ...savedSettings,
+    supabaseUrl: savedSettings.supabaseUrl || defaultSettings.supabaseUrl,
+    supabaseAnonKey: savedSettings.supabaseAnonKey || defaultSettings.supabaseAnonKey
+  };
 }
 
 function writeSettings(settings) {
   const nextSettings = { ...defaultSettings, ...settings };
   writeJson(settingsPath(), nextSettings);
   return nextSettings;
-}
-
-function shortcutLabel(shortcut) {
-  return normalizeShortcut(shortcut)
-    .replace('CommandOrControl', process.platform === 'darwin' ? 'Command' : 'Ctrl')
-    .split('+')
-    .join(' + ');
 }
 
 function normalizeShortcut(shortcut) {
@@ -101,7 +107,7 @@ function normalizeShortcut(shortcut) {
   };
 
   return String(shortcut || '')
-    .replace(/＋/g, '+')
+    .replace(/[，＋]/g, '+')
     .split('+')
     .map((part) => part.trim())
     .filter(Boolean)
@@ -122,14 +128,11 @@ function electronAccelerator(shortcut) {
     .join('+');
 }
 
-function publicSettings(settings = readSettings(), extra = {}) {
-  return {
-    ...settings,
-    dataPath: dataPath(settings),
-    popupShortcut: shortcutLabel(settings.popupShortcut),
-    popupShortcutAccelerator: electronAccelerator(settings.popupShortcut),
-    ...extra
-  };
+function shortcutLabel(shortcut) {
+  return normalizeShortcut(shortcut)
+    .replace('CommandOrControl', process.platform === 'darwin' ? 'Command' : 'Ctrl')
+    .split('+')
+    .join(' + ');
 }
 
 function getDataDir(settings = readSettings()) {
@@ -140,6 +143,18 @@ function dataPath(settings = readSettings()) {
   return path.join(getDataDir(settings), DATA_FILE);
 }
 
+function publicSettings(settings = readSettings(), extra = {}) {
+  const { supabaseSession, ...safeSettings } = settings;
+  return {
+    ...safeSettings,
+    dataPath: dataPath(settings),
+    popupShortcut: shortcutLabel(settings.popupShortcut),
+    popupShortcutAccelerator: electronAccelerator(settings.popupShortcut),
+    supabaseConfigured: isSupabaseConfigured(settings),
+    ...extra
+  };
+}
+
 function emptyData() {
   return {
     version: 1,
@@ -148,7 +163,7 @@ function emptyData() {
   };
 }
 
-function normalizeRecord(record) {
+function normalizeRecord(record = {}) {
   return {
     id: record.id || uid('record'),
     content: record.content || '',
@@ -164,8 +179,8 @@ function normalizeRecord(record) {
   };
 }
 
-function readData() {
-  const data = readJson(dataPath(), emptyData());
+function readData(settings = readSettings()) {
+  const data = readJson(dataPath(settings), emptyData());
   return {
     version: 1,
     records: Array.isArray(data.records) ? data.records.map(normalizeRecord) : [],
@@ -173,18 +188,249 @@ function readData() {
   };
 }
 
-function writeData(data) {
+function writeData(data, settings = readSettings()) {
   const nextData = {
     version: 1,
     records: Array.isArray(data.records) ? data.records.map(normalizeRecord) : [],
     updatedAt: nowIso()
   };
-  writeJson(dataPath(), nextData);
+  writeJson(dataPath(settings), nextData);
   return nextData;
 }
 
-function listRecords() {
-  return readData().records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+function listLocalRecords(settings = readSettings()) {
+  return readData(settings).records.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function isSupabaseConfigured(settings = readSettings()) {
+  return Boolean(settings.supabaseUrl && settings.supabaseAnonKey);
+}
+
+function canUseSupabase(settings = readSettings()) {
+  return settings.storageMode === 'supabase' && isSupabaseConfigured(settings) && Boolean(settings.supabaseSession?.access_token);
+}
+
+async function makeSupabaseClient(settings = readSettings(), session = settings.supabaseSession) {
+  if (!isSupabaseConfigured(settings)) {
+    throw new Error('请先配置 Supabase URL 和 anon key');
+  }
+
+  const client = createClient(settings.supabaseUrl, settings.supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
+  });
+
+  if (session?.access_token && session?.refresh_token) {
+    const { data, error } = await client.auth.setSession({
+      access_token: session.access_token,
+      refresh_token: session.refresh_token
+    });
+    if (error) throw error;
+    if (data.session) {
+      writeSettings({ ...settings, supabaseSession: data.session, storageMode: 'supabase' });
+    }
+  }
+
+  return client;
+}
+
+async function getSupabaseUser(client) {
+  const { data, error } = await client.auth.getUser();
+  if (error) throw error;
+  if (!data.user) throw new Error('请先登录');
+  return data.user;
+}
+
+async function authState(settings = readSettings()) {
+  const configured = isSupabaseConfigured(settings);
+  if (!configured || !settings.supabaseSession?.access_token) {
+    return {
+      configured,
+      authenticated: false,
+      user: null,
+      storageMode: settings.storageMode || 'local'
+    };
+  }
+
+  try {
+    const client = await makeSupabaseClient(settings);
+    const user = await getSupabaseUser(client);
+    return {
+      configured: true,
+      authenticated: true,
+      user: { id: user.id, email: user.email },
+      storageMode: 'supabase'
+    };
+  } catch (error) {
+    writeSettings({ ...settings, supabaseSession: null, storageMode: 'local' });
+    return {
+      configured: true,
+      authenticated: false,
+      user: null,
+      storageMode: 'local',
+      error: error.message
+    };
+  }
+}
+
+function recordToRow(record, userId) {
+  const normalized = normalizeRecord(record);
+  return {
+    id: normalized.id,
+    user_id: userId,
+    content: normalized.content,
+    status: normalized.status,
+    priority: normalized.priority,
+    tags: normalized.tags,
+    started_at: normalized.startedAt || null,
+    ended_at: normalized.endedAt || null,
+    note: normalized.note,
+    attachments: normalized.attachments,
+    created_at: normalized.createdAt,
+    updated_at: normalized.updatedAt
+  };
+}
+
+function rowToRecord(row) {
+  return normalizeRecord({
+    id: row.id,
+    content: row.content,
+    status: row.status,
+    priority: row.priority,
+    tags: row.tags,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    note: row.note,
+    attachments: row.attachments,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  });
+}
+
+async function listSupabaseRecords(settings = readSettings()) {
+  const client = await makeSupabaseClient(settings);
+  const user = await getSupabaseUser(client);
+  const { data, error } = await client
+    .from('work_records')
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(rowToRecord);
+}
+
+async function getSupabaseRecord(client, userId, id) {
+  const { data, error } = await client
+    .from('work_records')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('Record not found');
+  return rowToRecord(data);
+}
+
+async function createSupabaseRecord(payload = {}, settings = readSettings()) {
+  const client = await makeSupabaseClient(settings);
+  const user = await getSupabaseUser(client);
+  const record = normalizeRecord({
+    ...payload,
+    id: uid('record'),
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  });
+
+  const { data, error } = await client
+    .from('work_records')
+    .insert(recordToRow(record, user.id))
+    .select('*')
+    .single();
+  if (error) throw error;
+  return rowToRecord(data);
+}
+
+async function updateSupabaseRecord(id, patch = {}, settings = readSettings()) {
+  const client = await makeSupabaseClient(settings);
+  const user = await getSupabaseUser(client);
+  const updateRow = {
+    updated_at: nowIso()
+  };
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'content')) updateRow.content = patch.content || '';
+  if (Object.prototype.hasOwnProperty.call(patch, 'status')) updateRow.status = patch.status || 'todo';
+  if (Object.prototype.hasOwnProperty.call(patch, 'priority')) updateRow.priority = patch.priority || 'normal';
+  if (Object.prototype.hasOwnProperty.call(patch, 'tags')) updateRow.tags = Array.isArray(patch.tags) ? patch.tags : [];
+  if (Object.prototype.hasOwnProperty.call(patch, 'startedAt')) updateRow.started_at = patch.startedAt || null;
+  if (Object.prototype.hasOwnProperty.call(patch, 'endedAt')) updateRow.ended_at = patch.endedAt || null;
+  if (Object.prototype.hasOwnProperty.call(patch, 'note')) updateRow.note = patch.note || '';
+  if (Object.prototype.hasOwnProperty.call(patch, 'attachments')) updateRow.attachments = Array.isArray(patch.attachments) ? patch.attachments : [];
+
+  const { data, error } = await client
+    .from('work_records')
+    .update(updateRow)
+    .eq('user_id', user.id)
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error) throw error;
+  return rowToRecord(data);
+}
+
+async function deleteSupabaseRecord(id, settings = readSettings()) {
+  const client = await makeSupabaseClient(settings);
+  const user = await getSupabaseUser(client);
+  const { error } = await client
+    .from('work_records')
+    .delete()
+    .eq('user_id', user.id)
+    .eq('id', id);
+  if (error) throw error;
+  return { deleted: true };
+}
+
+function normalizeAttachment(attachment = {}) {
+  const now = nowIso();
+  return {
+    id: attachment.id || uid('attachment'),
+    type: attachment.type || 'note',
+    title: attachment.title || '',
+    body: attachment.body || '',
+    url: attachment.url || '',
+    description: attachment.description || '',
+    site: attachment.site || '',
+    username: attachment.username || '',
+    password: attachment.password || '',
+    remark: attachment.remark || '',
+    createdAt: attachment.createdAt || now,
+    updatedAt: attachment.updatedAt || now
+  };
+}
+
+async function mutateSupabaseAttachments(recordId, mutator, settings = readSettings()) {
+  const client = await makeSupabaseClient(settings);
+  const user = await getSupabaseUser(client);
+  const record = await getSupabaseRecord(client, user.id, recordId);
+  const attachments = Array.isArray(record.attachments) ? record.attachments.map(normalizeAttachment) : [];
+  const result = mutator(attachments);
+  const nextAttachments = result.attachments || attachments;
+  const updatedAt = nowIso();
+  const { error } = await client
+    .from('work_records')
+    .update({ attachments: nextAttachments, updated_at: updatedAt })
+    .eq('user_id', user.id)
+    .eq('id', recordId);
+  if (error) throw error;
+  return result.value;
+}
+
+async function listRecords() {
+  const settings = readSettings();
+  if (canUseSupabase(settings)) return listSupabaseRecords(settings);
+  return listLocalRecords(settings);
 }
 
 function updateWindowState(settings = readSettings()) {
@@ -210,12 +456,8 @@ function resizeWindowByDrag(edge, deltaX = 0, deltaY = 0) {
   const dx = Number(deltaX) || 0;
   const dy = Number(deltaY) || 0;
 
-  if (edge.includes('e')) {
-    next.width = Math.max(MIN_WINDOW_WIDTH, bounds.width + dx);
-  }
-  if (edge.includes('s')) {
-    next.height = Math.max(MIN_WINDOW_HEIGHT, bounds.height + dy);
-  }
+  if (edge.includes('e')) next.width = Math.max(MIN_WINDOW_WIDTH, bounds.width + dx);
+  if (edge.includes('s')) next.height = Math.max(MIN_WINDOW_HEIGHT, bounds.height + dy);
   if (edge.includes('w')) {
     const width = Math.max(MIN_WINDOW_WIDTH, bounds.width - dx);
     next.x = bounds.x + (bounds.width - width);
@@ -246,12 +488,8 @@ function resizeWindowToCursor(edge, startBounds, startPoint) {
   };
   const next = { ...bounds };
 
-  if (edge.includes('e')) {
-    next.width = Math.max(MIN_WINDOW_WIDTH, bounds.width + dx);
-  }
-  if (edge.includes('s')) {
-    next.height = Math.max(MIN_WINDOW_HEIGHT, bounds.height + dy);
-  }
+  if (edge.includes('e')) next.width = Math.max(MIN_WINDOW_WIDTH, bounds.width + dx);
+  if (edge.includes('s')) next.height = Math.max(MIN_WINDOW_HEIGHT, bounds.height + dy);
   if (edge.includes('w')) {
     const width = Math.max(MIN_WINDOW_WIDTH, bounds.width - dx);
     next.x = bounds.x + (bounds.width - width);
@@ -358,8 +596,11 @@ function registerShortcuts() {
 function registerIpc() {
   ipcMain.handle('records:list', () => listRecords());
 
-  ipcMain.handle('records:create', (_event, payload = {}) => {
-    const data = readData();
+  ipcMain.handle('records:create', async (_event, payload = {}) => {
+    const settings = readSettings();
+    if (canUseSupabase(settings)) return createSupabaseRecord(payload, settings);
+
+    const data = readData(settings);
     const record = normalizeRecord({
       ...payload,
       id: uid('record'),
@@ -367,73 +608,189 @@ function registerIpc() {
       updatedAt: nowIso()
     });
     data.records.unshift(record);
-    writeData(data);
+    writeData(data, settings);
     return record;
   });
 
-  ipcMain.handle('records:update', (_event, id, patch = {}) => {
-    const data = readData();
+  ipcMain.handle('records:update', async (_event, id, patch = {}) => {
+    const settings = readSettings();
+    if (canUseSupabase(settings)) return updateSupabaseRecord(id, patch, settings);
+
+    const data = readData(settings);
     const record = data.records.find((item) => item.id === id);
     if (!record) throw new Error('Record not found');
     Object.assign(record, patch, { id, updatedAt: nowIso() });
-    writeData(data);
+    writeData(data, settings);
     return normalizeRecord(record);
   });
 
-  ipcMain.handle('records:delete', (_event, id) => {
-    const data = readData();
+  ipcMain.handle('records:delete', async (_event, id) => {
+    const settings = readSettings();
+    if (canUseSupabase(settings)) return deleteSupabaseRecord(id, settings);
+
+    const data = readData(settings);
     const before = data.records.length;
     data.records = data.records.filter((item) => item.id !== id);
-    writeData(data);
+    writeData(data, settings);
     return { deleted: before !== data.records.length };
   });
 
-  ipcMain.handle('attachments:create', (_event, recordId, attachment = {}) => {
-    const data = readData();
+  ipcMain.handle('attachments:create', async (_event, recordId, attachment = {}) => {
+    const settings = readSettings();
+    const nextAttachment = normalizeAttachment(attachment);
+    if (canUseSupabase(settings)) {
+      return mutateSupabaseAttachments(recordId, (attachments) => ({
+        attachments: [...attachments, nextAttachment],
+        value: nextAttachment
+      }), settings);
+    }
+
+    const data = readData(settings);
     const record = data.records.find((item) => item.id === recordId);
     if (!record) throw new Error('Record not found');
-    const now = nowIso();
-    const nextAttachment = {
-      id: uid('attachment'),
-      type: attachment.type || 'note',
-      title: attachment.title || '',
-      body: attachment.body || '',
-      url: attachment.url || '',
-      description: attachment.description || '',
-      site: attachment.site || '',
-      username: attachment.username || '',
-      password: attachment.password || '',
-      remark: attachment.remark || '',
-      createdAt: now,
-      updatedAt: now
-    };
     record.attachments.push(nextAttachment);
-    record.updatedAt = now;
-    writeData(data);
+    record.updatedAt = nowIso();
+    writeData(data, settings);
     return nextAttachment;
   });
 
-  ipcMain.handle('attachments:update', (_event, recordId, attachmentId, patch = {}) => {
-    const data = readData();
+  ipcMain.handle('attachments:update', async (_event, recordId, attachmentId, patch = {}) => {
+    const settings = readSettings();
+    if (canUseSupabase(settings)) {
+      return mutateSupabaseAttachments(recordId, (attachments) => {
+        let updated = null;
+        const nextAttachments = attachments.map((item) => {
+          if (item.id !== attachmentId) return item;
+          updated = normalizeAttachment({ ...item, ...patch, id: attachmentId, updatedAt: nowIso() });
+          return updated;
+        });
+        if (!updated) throw new Error('Attachment not found');
+        return { attachments: nextAttachments, value: updated };
+      }, settings);
+    }
+
+    const data = readData(settings);
     const record = data.records.find((item) => item.id === recordId);
     if (!record) throw new Error('Record not found');
     const attachment = record.attachments.find((item) => item.id === attachmentId);
     if (!attachment) throw new Error('Attachment not found');
     Object.assign(attachment, patch, { id: attachmentId, updatedAt: nowIso() });
     record.updatedAt = nowIso();
-    writeData(data);
+    writeData(data, settings);
     return attachment;
   });
 
-  ipcMain.handle('attachments:delete', (_event, recordId, attachmentId) => {
-    const data = readData();
+  ipcMain.handle('attachments:delete', async (_event, recordId, attachmentId) => {
+    const settings = readSettings();
+    if (canUseSupabase(settings)) {
+      return mutateSupabaseAttachments(recordId, (attachments) => ({
+        attachments: attachments.filter((item) => item.id !== attachmentId),
+        value: { deleted: attachments.some((item) => item.id === attachmentId) }
+      }), settings);
+    }
+
+    const data = readData(settings);
     const record = data.records.find((item) => item.id === recordId);
     if (!record) throw new Error('Record not found');
     const before = record.attachments.length;
     record.attachments = record.attachments.filter((item) => item.id !== attachmentId);
     record.updatedAt = nowIso();
-    writeData(data);
+    writeData(data, settings);
     return { deleted: before !== record.attachments.length };
+  });
+
+  ipcMain.handle('auth:get', () => authState());
+
+  ipcMain.handle('auth:configure', async (_event, payload = {}) => {
+    const current = readSettings();
+    const supabaseUrl = String(payload.supabaseUrl || '').trim();
+    const supabaseAnonKey = String(payload.supabaseAnonKey || '').trim();
+    const changed = supabaseUrl !== current.supabaseUrl || supabaseAnonKey !== current.supabaseAnonKey;
+    const nextSettings = writeSettings({
+      ...current,
+      supabaseUrl,
+      supabaseAnonKey,
+      supabaseSession: changed ? null : current.supabaseSession,
+      storageMode: changed ? 'local' : current.storageMode
+    });
+    return { settings: publicSettings(nextSettings), auth: await authState(nextSettings) };
+  });
+
+  ipcMain.handle('auth:signIn', async (_event, payload = {}) => {
+    const current = readSettings();
+    const nextConfig = {
+      ...current,
+      supabaseUrl: String(payload.supabaseUrl || current.supabaseUrl || '').trim(),
+      supabaseAnonKey: String(payload.supabaseAnonKey || current.supabaseAnonKey || '').trim()
+    };
+    const client = await makeSupabaseClient(nextConfig, null);
+    const { data, error } = await client.auth.signInWithPassword({
+      email: String(payload.email || '').trim(),
+      password: String(payload.password || '')
+    });
+    if (error) throw error;
+    const nextSettings = writeSettings({
+      ...nextConfig,
+      supabaseSession: data.session,
+      storageMode: 'supabase'
+    });
+    return { settings: publicSettings(nextSettings), auth: await authState(nextSettings) };
+  });
+
+  ipcMain.handle('auth:signUp', async (_event, payload = {}) => {
+    const current = readSettings();
+    const nextConfig = {
+      ...current,
+      supabaseUrl: String(payload.supabaseUrl || current.supabaseUrl || '').trim(),
+      supabaseAnonKey: String(payload.supabaseAnonKey || current.supabaseAnonKey || '').trim()
+    };
+    const client = await makeSupabaseClient(nextConfig, null);
+    const { data, error } = await client.auth.signUp({
+      email: String(payload.email || '').trim(),
+      password: String(payload.password || '')
+    });
+    if (error) throw error;
+
+    const nextSettings = writeSettings({
+      ...nextConfig,
+      supabaseSession: data.session || null,
+      storageMode: data.session ? 'supabase' : 'local'
+    });
+    return {
+      settings: publicSettings(nextSettings),
+      auth: await authState(nextSettings),
+      needsConfirmation: !data.session
+    };
+  });
+
+  ipcMain.handle('auth:signOut', async () => {
+    const current = readSettings();
+    if (isSupabaseConfigured(current) && current.supabaseSession) {
+      try {
+        const client = await makeSupabaseClient(current);
+        await client.auth.signOut();
+      } catch (error) {
+        console.warn('Supabase sign out failed:', error.message);
+      }
+    }
+    const nextSettings = writeSettings({ ...current, supabaseSession: null, storageMode: 'local' });
+    return { settings: publicSettings(nextSettings), auth: await authState(nextSettings) };
+  });
+
+  ipcMain.handle('auth:migrateLocalToSupabase', async () => {
+    const settings = readSettings();
+    const client = await makeSupabaseClient(settings);
+    const user = await getSupabaseUser(client);
+    const localRecords = listLocalRecords(settings);
+    if (localRecords.length === 0) return { migrated: 0 };
+
+    const { error } = await client
+      .from('work_records')
+      .upsert(localRecords.map((record) => recordToRow(record, user.id)), { onConflict: 'id' });
+    if (error) throw error;
+
+    writeSettings({ ...settings, storageMode: 'supabase' });
+    return { migrated: localRecords.length };
   });
 
   ipcMain.handle('settings:get', () => publicSettings());
@@ -463,8 +820,9 @@ function registerIpc() {
       return { canceled: true, settings: publicSettings() };
     }
 
-    const currentData = readData();
-    const nextSettings = writeSettings({ ...readSettings(), dataDir: result.filePaths[0] });
+    const currentSettings = readSettings();
+    const currentData = readData(currentSettings);
+    const nextSettings = writeSettings({ ...currentSettings, dataDir: result.filePaths[0] });
     const nextDataPath = dataPath(nextSettings);
     if (!fs.existsSync(nextDataPath)) {
       writeJson(nextDataPath, currentData);

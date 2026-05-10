@@ -6,12 +6,15 @@ import {
   ChevronUp,
   Circle,
   Clipboard,
+  Cloud,
   Copy,
   Eye,
   EyeOff,
   FileText,
   Globe,
   Lock,
+  LogIn,
+  LogOut,
   Minus,
   Pin,
   PinOff,
@@ -19,6 +22,8 @@ import {
   Search,
   Settings,
   Trash2,
+  UploadCloud,
+  UserPlus,
   X
 } from 'lucide-react';
 
@@ -43,6 +48,8 @@ const attachmentTypes = [
 ];
 
 const api = window.workRecord || createBrowserFallbackApi();
+const DEFAULT_SUPABASE_URL = 'https://mwuvkyjynsvsfcqfyeks.supabase.co';
+const DEFAULT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_5yTjz0oR3Dc4MCS5Cjhkzg_5aoqHXoM';
 
 function nowIso() {
   return new Date().toISOString();
@@ -55,29 +62,38 @@ function uid(prefix) {
 function createBrowserFallbackApi() {
   const dataKey = 'work-record-preview-data';
   const settingsKey = 'work-record-preview-settings';
+  const authKey = 'work-record-preview-auth';
   const defaultSettings = {
     dataPath: '浏览器预览 localStorage',
     opacity: 0.92,
     alwaysOnTop: false,
     collapsed: false,
     popupShortcut: 'Ctrl + Alt + W',
-    popupShortcutAccelerator: 'CommandOrControl+Alt+W'
+    popupShortcutAccelerator: 'CommandOrControl+Alt+W',
+    storageMode: 'local',
+    supabaseUrl: DEFAULT_SUPABASE_URL,
+    supabaseAnonKey: DEFAULT_SUPABASE_PUBLISHABLE_KEY,
+    supabaseConfigured: true
   };
 
-  const readData = () => {
+  const readJson = (key, fallback) => {
     try {
-      return JSON.parse(localStorage.getItem(dataKey)) || { records: [] };
+      return JSON.parse(localStorage.getItem(key)) || fallback;
     } catch {
-      return { records: [] };
+      return fallback;
     }
   };
-  const writeData = (data) => localStorage.setItem(dataKey, JSON.stringify(data));
+  const writeJson = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+  const readData = () => readJson(dataKey, { records: [] });
+  const writeData = (data) => writeJson(dataKey, data);
   const readSettings = () => {
-    try {
-      return { ...defaultSettings, ...(JSON.parse(localStorage.getItem(settingsKey)) || {}) };
-    } catch {
-      return defaultSettings;
-    }
+    const saved = readJson(settingsKey, {});
+    return {
+      ...defaultSettings,
+      ...saved,
+      supabaseUrl: saved.supabaseUrl || defaultSettings.supabaseUrl,
+      supabaseAnonKey: saved.supabaseAnonKey || defaultSettings.supabaseAnonKey
+    };
   };
   const writeSettings = (settings) => {
     const next = { ...readSettings(), ...settings };
@@ -86,7 +102,14 @@ function createBrowserFallbackApi() {
       next.popupShortcutAccelerator = shortcutAccelerator(settings.popupShortcut);
       next.popupShortcutError = '';
     }
-    localStorage.setItem(settingsKey, JSON.stringify(next));
+    next.supabaseConfigured = Boolean(next.supabaseUrl && next.supabaseAnonKey);
+    writeJson(settingsKey, next);
+    return next;
+  };
+  const readAuth = () => readJson(authKey, { configured: false, authenticated: false, user: null, storageMode: 'local' });
+  const writeAuth = (auth) => {
+    const next = { ...readAuth(), ...auth };
+    writeJson(authKey, next);
     return next;
   };
 
@@ -131,12 +154,7 @@ function createBrowserFallbackApi() {
     attachments: {
       create: async (recordId, attachment) => {
         const data = readData();
-        const nextAttachment = {
-          id: uid('attachment'),
-          createdAt: nowIso(),
-          updatedAt: nowIso(),
-          ...attachment
-        };
+        const nextAttachment = { id: uid('attachment'), createdAt: nowIso(), updatedAt: nowIso(), ...attachment };
         data.records = data.records.map((record) => (
           record.id === recordId
             ? { ...record, attachments: [...(record.attachments || []), nextAttachment], updatedAt: nowIso() }
@@ -151,7 +169,7 @@ function createBrowserFallbackApi() {
           record.id === recordId
             ? {
                 ...record,
-                attachments: record.attachments.map((item) => (
+                attachments: (record.attachments || []).map((item) => (
                   item.id === attachmentId ? { ...item, ...patch, updatedAt: nowIso() } : item
                 )),
                 updatedAt: nowIso()
@@ -166,7 +184,7 @@ function createBrowserFallbackApi() {
           record.id === recordId
             ? {
                 ...record,
-                attachments: record.attachments.filter((item) => item.id !== attachmentId),
+                attachments: (record.attachments || []).filter((item) => item.id !== attachmentId),
                 updatedAt: nowIso()
               }
             : record
@@ -179,6 +197,60 @@ function createBrowserFallbackApi() {
       get: async () => readSettings(),
       update: async (patch) => writeSettings(patch),
       selectDataDir: async () => ({ canceled: true, settings: readSettings() })
+    },
+    auth: {
+      get: async () => {
+        const settings = readSettings();
+        const auth = readAuth();
+        return {
+          ...auth,
+          configured: Boolean(settings.supabaseUrl && settings.supabaseAnonKey),
+          storageMode: settings.storageMode
+        };
+      },
+      configure: async (payload) => {
+        const settings = writeSettings({
+          supabaseUrl: payload.supabaseUrl,
+          supabaseAnonKey: payload.supabaseAnonKey,
+          storageMode: 'local'
+        });
+        const auth = writeAuth({ configured: settings.supabaseConfigured, authenticated: false, user: null, storageMode: 'local' });
+        return { settings, auth };
+      },
+      signIn: async (payload) => {
+        const settings = writeSettings({
+          supabaseUrl: payload.supabaseUrl,
+          supabaseAnonKey: payload.supabaseAnonKey,
+          storageMode: 'supabase'
+        });
+        const auth = writeAuth({
+          configured: true,
+          authenticated: true,
+          user: { id: 'preview', email: payload.email },
+          storageMode: 'supabase'
+        });
+        return { settings, auth };
+      },
+      signUp: async (payload) => {
+        const settings = writeSettings({
+          supabaseUrl: payload.supabaseUrl,
+          supabaseAnonKey: payload.supabaseAnonKey,
+          storageMode: 'supabase'
+        });
+        const auth = writeAuth({
+          configured: true,
+          authenticated: true,
+          user: { id: 'preview', email: payload.email },
+          storageMode: 'supabase'
+        });
+        return { settings, auth, needsConfirmation: false };
+      },
+      signOut: async () => {
+        const settings = writeSettings({ storageMode: 'local' });
+        const auth = writeAuth({ authenticated: false, user: null, storageMode: 'local' });
+        return { settings, auth };
+      },
+      migrateLocalToSupabase: async () => ({ migrated: readData().records.length })
     },
     window: {
       setOpacity: async (opacity) => writeSettings({ opacity }).opacity,
@@ -214,7 +286,7 @@ function emptyAttachment(type = 'note') {
 
 function tagsFromInput(value) {
   return value
-    .split(/[,\s，]+/)
+    .split(/[,，\s]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
@@ -255,7 +327,7 @@ function StatusIcon({ status }) {
 
 function normalizeShortcutInput(shortcut) {
   return String(shortcut || '')
-    .replace(/＋/g, '+')
+    .replace(/[，＋]/g, '+')
     .split('+')
     .map((part) => part.trim())
     .filter(Boolean)
@@ -276,6 +348,21 @@ function shortcutAccelerator(shortcut) {
     .join('+');
 }
 
+function normalizeShortcutKey(key) {
+  const keyMap = {
+    ' ': 'Space',
+    ArrowUp: 'Up',
+    ArrowDown: 'Down',
+    ArrowLeft: 'Left',
+    ArrowRight: 'Right',
+    Escape: 'Esc'
+  };
+  if (keyMap[key]) return keyMap[key];
+  if (/^f\d{1,2}$/i.test(key)) return key.toUpperCase();
+  if (key.length === 1) return key.toUpperCase();
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
 function shortcutFromKeyboardEvent(event) {
   const parts = [];
   if (event.ctrlKey) parts.push('Ctrl');
@@ -292,24 +379,7 @@ function shortcutFromKeyboardEvent(event) {
 }
 
 function eventMatchesShortcut(event, shortcut) {
-  const accelerator = shortcutAccelerator(shortcut);
-  if (!accelerator) return false;
-  return shortcutAccelerator(shortcutFromKeyboardEvent(event)) === accelerator;
-}
-
-function normalizeShortcutKey(key) {
-  const keyMap = {
-    ' ': 'Space',
-    ArrowUp: 'Up',
-    ArrowDown: 'Down',
-    ArrowLeft: 'Left',
-    ArrowRight: 'Right',
-    Escape: 'Esc'
-  };
-  if (keyMap[key]) return keyMap[key];
-  if (/^f\d{1,2}$/i.test(key)) return key.toUpperCase();
-  if (key.length === 1) return key.toUpperCase();
-  return key.charAt(0).toUpperCase() + key.slice(1);
+  return shortcutAccelerator(shortcutFromKeyboardEvent(event)) === shortcutAccelerator(shortcut);
 }
 
 function statusPatch(record, status) {
@@ -368,6 +438,7 @@ function SelectMenu({ value, options, onChange, compact = false, label, tone = '
 export default function App() {
   const [records, setRecords] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [auth, setAuth] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -379,23 +450,46 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [shortcutDraft, setShortcutDraft] = useState('Ctrl + Alt + W');
   const [shortcutSaving, setShortcutSaving] = useState(false);
+  const [showAuthPanel, setShowAuthPanel] = useState(false);
+  const [authDraft, setAuthDraft] = useState({
+    supabaseUrl: '',
+    supabaseAnonKey: '',
+    email: '',
+    password: ''
+  });
   const [previewSize, setPreviewSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const isBrowserPreview = !window.workRecord;
 
-  async function refresh() {
-    const [nextRecords, nextSettings] = await Promise.all([api.records.list(), api.settings.get()]);
-    setRecords(nextRecords);
-    setSettings(nextSettings);
-    setSelectedId((current) => current || nextRecords[0]?.id || null);
+  async function refresh(options = {}) {
+    try {
+      const [nextSettings, nextAuth] = await Promise.all([api.settings.get(), api.auth.get()]);
+      setSettings(nextSettings);
+      setAuth(nextAuth);
+      setAuthDraft((current) => ({
+        ...current,
+        supabaseUrl: current.supabaseUrl || nextSettings.supabaseUrl || '',
+        supabaseAnonKey: current.supabaseAnonKey || nextSettings.supabaseAnonKey || '',
+        email: current.email || nextAuth?.user?.email || ''
+      }));
+
+      const nextRecords = await api.records.list();
+      setRecords(nextRecords);
+      setSelectedId((current) => current || nextRecords[0]?.id || null);
+      if (options.openAuthOnMissing && !nextAuth?.authenticated) {
+        setShowAuthPanel(true);
+      }
+    } catch (error) {
+      setToast(error.message || '加载失败');
+    }
   }
 
   useEffect(() => {
-    refresh();
+    refresh({ openAuthOnMissing: true });
   }, []);
 
   useEffect(() => {
-    if (!toast) return;
-    const timer = window.setTimeout(() => setToast(''), 1600);
+    if (!toast) return undefined;
+    const timer = window.setTimeout(() => setToast(''), 1800);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
@@ -455,22 +549,32 @@ export default function App() {
       await refresh();
       setSelectedId(record.id);
       setToast('已新增记录');
+    } catch (error) {
+      setToast(error.message || '新增失败');
     } finally {
       setBusy(false);
     }
   }
 
   async function updateRecord(id, patch) {
-    await api.records.update(id, patch);
-    await refresh();
-    setSelectedId(id);
+    try {
+      await api.records.update(id, patch);
+      await refresh();
+      setSelectedId(id);
+    } catch (error) {
+      setToast(error.message || '保存失败');
+    }
   }
 
   async function deleteRecord(id) {
-    await api.records.delete(id);
-    setSelectedId(null);
-    await refresh();
-    setToast('已删除记录');
+    try {
+      await api.records.delete(id);
+      setSelectedId(null);
+      await refresh();
+      setToast('已删除记录');
+    } catch (error) {
+      setToast(error.message || '删除失败');
+    }
   }
 
   async function createAttachment(event) {
@@ -487,19 +591,27 @@ export default function App() {
       return;
     }
 
-    await api.attachments.create(selected.id, attachmentDraft);
-    setAttachmentDraft(emptyAttachment(attachmentDraft.type));
-    await refresh();
-    setSelectedId(selected.id);
-    setToast('附件已添加');
+    try {
+      await api.attachments.create(selected.id, attachmentDraft);
+      setAttachmentDraft(emptyAttachment(attachmentDraft.type));
+      await refresh();
+      setSelectedId(selected.id);
+      setToast('附件已添加');
+    } catch (error) {
+      setToast(error.message || '附件添加失败');
+    }
   }
 
   async function removeAttachment(attachmentId) {
     if (!selected) return;
-    await api.attachments.delete(selected.id, attachmentId);
-    await refresh();
-    setSelectedId(selected.id);
-    setToast('附件已删除');
+    try {
+      await api.attachments.delete(selected.id, attachmentId);
+      await refresh();
+      setSelectedId(selected.id);
+      setToast('附件已删除');
+    } catch (error) {
+      setToast(error.message || '附件删除失败');
+    }
   }
 
   async function setOpacity(value) {
@@ -575,6 +687,68 @@ export default function App() {
       await persistPopupShortcut(nextShortcut);
     } else {
       setToast('请按组合键，例如 Ctrl + Alt + W');
+    }
+  }
+
+  async function configureSupabase(event) {
+    event.preventDefault();
+    try {
+      const result = await api.auth.configure(authDraft);
+      setSettings(result.settings);
+      setAuth(result.auth);
+      setToast('Supabase 配置已保存');
+    } catch (error) {
+      setToast(error.message || '配置失败');
+    }
+  }
+
+  async function signIn(event) {
+    event.preventDefault();
+    try {
+      const result = await api.auth.signIn(authDraft);
+      setSettings(result.settings);
+      setAuth(result.auth);
+      await refresh();
+      setShowAuthPanel(false);
+      setToast('登录成功，已切换到云端存储');
+    } catch (error) {
+      setToast(error.message || '登录失败');
+    }
+  }
+
+  async function signUp(event) {
+    event.preventDefault();
+    try {
+      const result = await api.auth.signUp(authDraft);
+      setSettings(result.settings);
+      setAuth(result.auth);
+      await refresh();
+      setToast(result.needsConfirmation ? '注册成功，请先完成邮箱确认' : '注册并登录成功');
+    } catch (error) {
+      setToast(error.message || '注册失败');
+    }
+  }
+
+  async function signOut() {
+    try {
+      const result = await api.auth.signOut();
+      setSettings(result.settings);
+      setAuth(result.auth);
+      await refresh();
+      setShowAuthPanel(true);
+      setToast('已退出云端账号');
+    } catch (error) {
+      setToast(error.message || '退出失败');
+    }
+  }
+
+  async function migrateLocalToSupabase() {
+    try {
+      const result = await api.auth.migrateLocalToSupabase();
+      await refresh();
+      setToast(`已导入 ${result.migrated} 条本地记录`);
+    } catch (error) {
+      setToast(error.message || '导入失败');
     }
   }
 
@@ -691,6 +865,18 @@ export default function App() {
             </div>
           </section>
 
+          {showAuthPanel && (
+            <SupabasePanel
+              auth={auth}
+              draft={authDraft}
+              setDraft={setAuthDraft}
+              onConfigure={configureSupabase}
+              onSignIn={signIn}
+              onSignUp={signUp}
+              onClose={() => setShowAuthPanel(false)}
+            />
+          )}
+
           <section className="workspace">
             <aside className="record-list">
               {filteredRecords.length === 0 ? (
@@ -735,7 +921,15 @@ export default function App() {
           </section>
 
           <footer className="storage-bar">
-            <span title={settings.dataPath}>{settings.dataPath}</span>
+            <span title={settings.dataPath}>
+              {auth?.authenticated ? `云端存储：${auth.user?.email || ''}` : settings.dataPath}
+            </span>
+            <AuthFooter
+              auth={auth}
+              onOpen={() => setShowAuthPanel(true)}
+              onSignOut={signOut}
+              onMigrate={migrateLocalToSupabase}
+            />
             <form className="shortcut-editor" onSubmit={savePopupShortcut}>
               <label htmlFor="popupShortcut">弹出快捷键</label>
               <input
@@ -750,11 +944,94 @@ export default function App() {
               />
               <button type="submit" disabled={shortcutSaving}>保存</button>
             </form>
-            <button onClick={selectDataDir}>更换存储目录</button>
+            <button onClick={selectDataDir}>更换本地目录</button>
           </footer>
         </>
       )}
     </main>
+  );
+}
+
+function AuthFooter({ auth, onOpen, onSignOut, onMigrate }) {
+  if (auth?.authenticated) {
+    return (
+      <div className="auth-footer">
+        <button type="button" onClick={onMigrate} title="把本地 JSON 记录导入当前 Supabase 账号">
+          <UploadCloud size={15} />
+          导入本地
+        </button>
+        <button type="button" onClick={onSignOut}>
+          <LogOut size={15} />
+          退出
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="auth-footer">
+      <button type="button" onClick={onOpen}>
+        <Cloud size={15} />
+        Supabase 登录
+      </button>
+    </div>
+  );
+}
+
+function SupabasePanel({ auth, draft, setDraft, onConfigure, onSignIn, onSignUp, onClose }) {
+  const update = (patch) => setDraft((current) => ({ ...current, ...patch }));
+
+  return (
+    <section className="auth-panel no-drag">
+      <div className="auth-panel-title">
+        <div>
+          <strong>Supabase 邮箱登录</strong>
+          <span>{auth?.authenticated ? auth.user?.email : '登录后记录会写入云端 work_records 表'}</span>
+        </div>
+        <button type="button" onClick={onClose} title="关闭">
+          <X size={15} />
+        </button>
+      </div>
+      <form className="auth-form" onSubmit={onSignIn}>
+        <input
+          value={draft.supabaseUrl}
+          onChange={(event) => update({ supabaseUrl: event.target.value })}
+          placeholder="Supabase Project URL"
+        />
+        <input
+          value={draft.supabaseAnonKey}
+          onChange={(event) => update({ supabaseAnonKey: event.target.value })}
+          placeholder="Supabase publishable key"
+          type="password"
+        />
+        <input
+          value={draft.email}
+          onChange={(event) => update({ email: event.target.value })}
+          placeholder="邮箱"
+          type="email"
+        />
+        <input
+          value={draft.password}
+          onChange={(event) => update({ password: event.target.value })}
+          placeholder="密码"
+          type="password"
+        />
+        <div className="auth-actions">
+          <button type="button" onClick={onConfigure}>
+            <Cloud size={15} />
+            保存配置
+          </button>
+          <button type="submit">
+            <LogIn size={15} />
+            登录
+          </button>
+          <button type="button" onClick={onSignUp}>
+            <UserPlus size={15} />
+            注册
+          </button>
+        </div>
+      </form>
+    </section>
   );
 }
 
