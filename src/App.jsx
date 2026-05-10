@@ -472,12 +472,16 @@ export default function App() {
         email: current.email || nextAuth?.user?.email || ''
       }));
 
+      if (!nextAuth?.authenticated) {
+        setRecords([]);
+        setSelectedId(null);
+        setShowAuthPanel(false);
+        return;
+      }
+
       const nextRecords = await api.records.list();
       setRecords(nextRecords);
       setSelectedId((current) => current || nextRecords[0]?.id || null);
-      if (options.openAuthOnMissing && !nextAuth?.authenticated) {
-        setShowAuthPanel(true);
-      }
     } catch (error) {
       setToast(error.message || '加载失败');
     }
@@ -498,6 +502,12 @@ export default function App() {
       setShortcutDraft(settings.popupShortcut);
     }
   }, [settings?.popupShortcut]);
+
+  useEffect(() => {
+    if (!settings || auth?.authenticated || !settings.collapsed) return;
+    api.window.expand?.();
+    setSettings((current) => ({ ...current, collapsed: false }));
+  }, [settings, auth?.authenticated]);
 
   useEffect(() => {
     if (!settings?.popupShortcut) return undefined;
@@ -765,6 +775,28 @@ export default function App() {
       }
     : undefined;
 
+  if (!auth?.authenticated) {
+    return (
+      <main className="app-shell login-shell" style={isBrowserPreview ? { width: previewSize.width, height: previewSize.height } : undefined}>
+        {toast && <div className="toast">{toast}</div>}
+        <ResizeHandles
+          collapsed={false}
+          isBrowserPreview={isBrowserPreview}
+          previewSize={previewSize}
+          setPreviewSize={setPreviewSize}
+        />
+        <LoginScreen
+          draft={authDraft}
+          setDraft={setAuthDraft}
+          onSignIn={signIn}
+          onSignUp={signUp}
+          onMinimize={() => api.window.minimize()}
+          onClose={() => api.window.close()}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className={`app-shell ${settings.collapsed ? 'is-collapsed' : ''}`} style={shellStyle}>
       {toast && <div className="toast">{toast}</div>}
@@ -975,6 +1007,66 @@ function AuthFooter({ auth, onOpen, onSignOut, onMigrate }) {
         Supabase 登录
       </button>
     </div>
+  );
+}
+
+function LoginScreen({ draft, setDraft, onSignIn, onSignUp, onMinimize, onClose }) {
+  const update = (patch) => setDraft((current) => ({ ...current, ...patch }));
+
+  return (
+    <section className="login-page">
+      <div className="login-window-actions no-drag">
+        <button type="button" onClick={onMinimize} title="最小化">
+          <Minus size={17} />
+        </button>
+        <button type="button" onClick={onClose} title="关闭">
+          <X size={17} />
+        </button>
+      </div>
+
+      <div className="login-card no-drag">
+        <div className="login-brand">
+          <div className="brand-mark">WR</div>
+          <div>
+            <h1>工作记录</h1>
+            <p>使用邮箱登录后，记录和个人设置会同步到云端。</p>
+          </div>
+        </div>
+
+        <form className="login-form" onSubmit={onSignIn}>
+          <label>
+            <span>邮箱</span>
+            <input
+              value={draft.email}
+              onChange={(event) => update({ email: event.target.value })}
+              placeholder="name@example.com"
+              type="email"
+              autoComplete="email"
+            />
+          </label>
+          <label>
+            <span>密码</span>
+            <input
+              value={draft.password}
+              onChange={(event) => update({ password: event.target.value })}
+              placeholder="输入密码"
+              type="password"
+              autoComplete="current-password"
+            />
+          </label>
+          <div className="login-actions">
+            <button className="primary-login" type="submit">
+              <LogIn size={17} />
+              登录
+            </button>
+            <button type="button" onClick={onSignUp}>
+              <UserPlus size={17} />
+              注册
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
   );
 }
 

@@ -1280,6 +1280,117 @@ label span,
   animation: toastIn 180ms ease-out;
 }
 
+.login-shell {
+  min-height: 420px;
+}
+
+.login-page {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 38px;
+  -webkit-app-region: drag;
+}
+
+.login-window-actions {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: flex;
+  gap: 8px;
+}
+
+.login-window-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  color: #263442;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.login-window-actions button:hover {
+  color: #16495d;
+  background: rgba(31, 111, 139, 0.12);
+}
+
+.login-card {
+  width: min(430px, 100%);
+  display: grid;
+  gap: 24px;
+  padding: 30px;
+  border: 1px solid rgba(77, 91, 107, 0.15);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 22px 54px rgba(31, 42, 55, 0.18);
+  backdrop-filter: blur(18px);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.login-brand h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.login-brand p {
+  margin: 7px 0 0;
+  color: #657488;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+
+.login-form label span {
+  font-size: 13px;
+}
+
+.login-form input {
+  height: 44px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.login-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.login-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 42px;
+  border-radius: 8px;
+  color: #263442;
+  background: rgba(93, 111, 126, 0.1);
+}
+
+.login-actions .primary-login {
+  color: #ffffff;
+  background: #1f6f8b;
+}
+
+.login-actions button:hover {
+  transform: translateY(-1px);
+  color: #ffffff;
+  background: #195f77;
+}
+
 @keyframes toastIn {
   from { opacity: 0; transform: translate(-50%, -8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
